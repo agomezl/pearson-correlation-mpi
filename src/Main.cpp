@@ -9,11 +9,8 @@ using namespace std;
 
 int  numtasks, rank, len, rc;
 int * * matrixUI;
-int * * matrixSr;
-int users ,movies;
-MPI_Status status;
-int curnode;
-int m;
+int * matrixSr;
+int users ,movies, curnode, m;
 
 int main(int argc, char *argv[]) {
 
@@ -39,111 +36,95 @@ int main(int argc, char *argv[]) {
    cin >> users >> movies >> m;
    matrixUI = new int*[users];
    for (int i = 0; i < users; i++) matrixUI[i] = new int[movies];
-   if (rank == 0) {
-     matrixSr = new int*[users];
-     for (int i = 0; i < users; i++) matrixSr[i] = new int[m];
+   if (rank == 0) matrixSr = new int[users*m];
+
+   // Fill the matrix whit the dat
+   for (int i = 0 ; i < users; i++)
+     for (int j = 0; j < movies; j++)
+       cin >> matrixUI[i][j];
+
+   if (numtasks > users){
+     cout << "too many cores" << endl;
+     MPI_Abort(MPI_COMM_WORLD, rc);
    }
 
-   // Fill the matrix whit the data
-   for (int i = 0 ; i < users; i++) {
-     for (int j = 0; j < movies; j++) {
-       cin >> matrixUI[i][j];
+   int slice,rem,minU,maxU;
+   slice = users / numtasks;
+   minU  = rank*slice;
+   if (rank + 1 == numtasks){
+     maxU = users;
+     slice = users / numtasks + users % numtasks;
+   }else maxU = rank*slice + slice;
+
+   int vectSR[m*slice];
+   double corMatrix [users];
+   double best;
+   int bestIndx,offset;
+   for (int i = minU; i < maxU ; i++) {
+     for (int j = 0; j < users; j++) {
+       if (i == j) corMatrix[j] = 1.0;
+       else corMatrix[j] = corr(i,j);
+     }
+     for (int j = 0; j < m; j++) {
+       best     = -1e9;
+       bestIndx = -1;
+       for (int k = 0; k < users; k++) {
+         if (k == i) continue;
+         if (corMatrix[k] > best){
+           best = corMatrix[k];
+           bestIndx = k;
+         }
+       }
+       vectSR[(i - minU)*m+j] = bestIndx;
+       corMatrix[bestIndx] = -1e9;
      }
    }
 
-   if (rank == 0) mainMaster();
-   else mainNode();
+   int counts[numtasks],offs[numtasks],off;
 
-   MPI_Finalize();
+   MPI_Allgather(&slice,1,MPI_INT,counts ,1,MPI_INT,MPI_COMM_WORLD);
+
+   off = 0;
+   for(int j=0;j<numtasks;j++){
+     offs[j]=off;
+     counts[j] *= m;
+     off  += counts[j];
+   }
+
+   MPI_Gatherv(vectSR,slice*m,MPI_INT,
+               matrixSr,counts,offs,MPI_INT,
+               0,MPI_COMM_WORLD);
+
+   if (rank == 0)
+     for (int i = 0; i < users; i++){
+       for (int j = 0 ; j < m; j++)
+         cout << matrixSr[i*m +j] << " " ;
+       cout << endl;
+     }
+
+    MPI_Finalize();
 }
 
-void mainMaster(){
-  int tuple[2];
-  curnode = 0;
-  for (int i = 0 ; i < users; i++) {
-    MPI_Send(&i,1,MPI_INT,nextNode(),1,MPI_COMM_WORLD);
-  }
-  for (int i = 1; i < numtasks; ++i) {
-    int end = -1;
-    MPI_Send(&end,1,MPI_INT,i,1,MPI_COMM_WORLD);
-  }
-  curnode = 0;
-  for (int i = 0; i < users; i++) {
-    double row [m+1];
-    MPI_Recv(row,m+1,MPI_DOUBLE,nextNode(),2,MPI_COMM_WORLD,&status);
-    int idx = row[0];
-    memcpy(matrixSr[idx],&row[1],sizeof(double)*m);
-    for (int i = 0; i < m; ++i)
-      matrixSr[idx][i] = row[i+1];
-  }
-  for (int i = 0; i < users; ++i) {
-    for (int j = 0; j < m; ++j) {
-      cout<<matrixSr[i][j]<<" ";
-    }
-    cout<<endl;
-  }
-
-}
-
-double corr(int a, int u) {
-  double pa,pu;
-  pa = pu = 0.0;
-  for (int i = 0; i < movies; i++) {
-    pa += matrixUI[a][i];
-    pu += matrixUI[u][i];
-  }
-  pa /= movies;
-  pu /= movies;
-  double con=0;
-  for (int i = 0; i < movies; ++i){
-    con += (matrixUI[a][i]-pa)*(matrixUI[u][i]-pu);
-  }
-  double cod1 = 0;
-  double cod2 = 0;
-  for (int i = 0; i < movies; ++i) {
-    cod1 += (matrixUI[a][i]-pa)*(matrixUI[a][i]-pa);
-    cod2 += (matrixUI[u][i]-pu)*(matrixUI[u][i]-pu);
-  }
-  cod1 = sqrt(cod1);
-  cod2 = sqrt(cod2);
-  return con/(cod1+cod2);
-}
-
-void mainNode(){
-  double row [m+1];
-  double corMatrix [users];
-  while(true){
-    int idx;
-    MPI_Recv(&idx,1,MPI_INT,0,1,MPI_COMM_WORLD,&status);
-    if (idx == -1) break;
-    for (int i = 0; i < users; ++i) {
-      if (i == idx) corMatrix[i] = 1.0;
-      else {
-        corMatrix[i] = corr(i,idx);
-      }
-    }
-
-    for (int i = 1; i <= m; ++i) {
-      double best = -1e9;
-      int bestIdx = -1;
-      for (int j = 0; j < users; ++j) {
-        if (j == idx) continue;
-        if (corMatrix[j] > best){
-          best = corMatrix[j];
-          bestIdx = j;
-        }
-      }
-      row[i] = bestIdx;
-      corMatrix[bestIdx] = -1e9;
-    }
-    row[0] = idx;
-    MPI_Send(row,m+1,MPI_DOUBLE,0,2,MPI_COMM_WORLD);
-  }
-}
-
-int nextNode(){
-
-  curnode++;
-  if(curnode >= numtasks) curnode = 1;
-  return curnode;
-}
+ double corr(int a, int u) {
+   double pa,pu;
+   pa = pu = 0.0;
+   for (int i = 0; i < movies; i++) {
+     pa += matrixUI[a][i];
+     pu += matrixUI[u][i];
+   }
+   pa /= movies;
+   pu /= movies;
+   double con=0;
+   for (int i = 0; i < movies; ++i){
+     con += (matrixUI[a][i]-pa)*(matrixUI[u][i]-pu);
+   }
+   double cod1 = 0;
+   double cod2 = 0;
+   for (int i = 0; i < movies; ++i) {
+     cod1 += (matrixUI[a][i]-pa)*(matrixUI[a][i]-pa);
+     cod2 += (matrixUI[u][i]-pu)*(matrixUI[u][i]-pu);
+   }
+   cod1 = sqrt(cod1);
+   cod2 = sqrt(cod2);
+   return con/(cod1+cod2);
+ }
