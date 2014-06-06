@@ -1,0 +1,11 @@
+echo "100 100 4"
+
+for i in {0..100}
+do
+    for j in {0..100}
+    do
+        N=`shuf -i 0-5 -n 1`
+        echo -n "$N "
+    done
+echo ""
+done
